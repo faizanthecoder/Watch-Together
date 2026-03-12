@@ -1,0 +1,130 @@
+Create a **full-stack “Watch Together” streaming web application** where two or more users can watch the same video in sync in real time.
+
+TECH STACK:
+
+* Frontend: Next.js (App Router)
+* Backend: Node.js with Express
+* Real-time communication: Socket.IO
+* Styling: Tailwind CSS
+* Optional database: MongoDB (for storing rooms)
+* Deployment-ready structure
+
+CORE FEATURES:
+
+1. WATCH ROOM SYSTEM
+
+* Users can create a room with a unique room ID.
+* Other users can join using the room ID.
+* The room URL should look like: /room/[roomId].
+* The first user becomes the host.
+
+2. VIDEO PLAYER
+
+* Use the HTML5 video player.
+* Users can:
+
+  * Upload a video file
+  * Paste a video URL
+* The video should load for everyone in the room.
+
+3. REAL-TIME VIDEO SYNC
+   Use Socket.IO to synchronize:
+
+* Play
+* Pause
+* Seek
+* Current playback time
+
+Example logic:
+
+* When a user presses play, emit "play" event with currentTime.
+* Server broadcasts the event to other users in the room.
+* Other clients update their player accordingly.
+
+4. LIVE CHAT
+   Inside each room add a real-time chat:
+
+* Messages appear instantly
+* Show username and message
+* Use Socket.IO events
+
+5. ROOM USER LIST
+   Show users currently in the room.
+
+6. SIMPLE AUTHENTICATION
+   Users can join with a temporary username (no full auth required).
+
+7. UI DESIGN
+
+* Dark theme
+* Centered video player
+* Chat panel on the right
+* Room code at the top
+* Responsive layout
+* Smooth UI animations
+
+8. PROJECT STRUCTURE
+
+/project-root
+/client
+/app
+/room/[roomId]
+/components
+VideoPlayer.jsx
+ChatBox.jsx
+UserList.jsx
+/server
+server.js
+socket.js
+/public
+package.json
+
+9. SOCKET EVENTS
+
+Client emits:
+
+* joinRoom
+* play
+* pause
+* seek
+* message
+
+Server broadcasts:
+
+* userJoined
+* syncPlay
+* syncPause
+* syncSeek
+* chatMessage
+
+10. ADDITIONAL FEATURES
+    Implement:
+
+* Room creation button
+* Copy room link button
+* Loading screen while connecting
+* Video buffering handling
+* Error handling
+
+11. CODE REQUIREMENTS
+
+* Write clean modular code
+* Use React hooks
+* Use environment variables
+* Add comments explaining the logic
+
+12. DEPLOYMENT
+    Make the project deployable using:
+
+* Vercel for frontend
+* Render for backend
+
+Also include:
+
+* setup instructions
+* environment variables needed
+* npm install commands
+* npm run dev instructions
+* deployment steps
+
+Generate the **complete code for all files** including frontend, backend, and socket implementation.
