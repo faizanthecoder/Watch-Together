@@ -1,18 +1,10 @@
 import type { Express } from "express";
-import { createServer, type Server } from "http";
-import { Server as SocketIOServer } from "socket.io";
+import { type Server } from "http";
+import Pusher from "pusher";
 import { storage } from "./storage";
 import { randomUUID } from "crypto";
-import type {
-  JoinRoomPayload,
-  CreateRoomPayload,
-  ChatMessagePayload,
-  SyncPlayPayload,
-  SyncPausePayload,
-  SyncSeekPayload,
-  VideoLoadPayload,
-} from "@shared/schema";
-function log(message: string, source = "socket.io") {
+
+function log(message: string, source = "pusher") {
   const formattedTime = new Date().toLocaleTimeString("en-US", {
     hour: "numeric",
     minute: "2-digit",
@@ -22,245 +14,209 @@ function log(message: string, source = "socket.io") {
   console.log(`${formattedTime} [${source}] ${message}`);
 }
 
+let pusher: Pusher;
+function getPusherServer(): Pusher {
+  if (!pusher) {
+    if (!process.env.PUSHER_APP_ID || !process.env.PUSHER_KEY || !process.env.PUSHER_SECRET || !process.env.PUSHER_CLUSTER) {
+      throw new Error("Pusher environment variables are not set. Please add PUSHER_APP_ID, PUSHER_KEY, PUSHER_SECRET, and PUSHER_CLUSTER.");
+    }
+    pusher = new Pusher({
+      appId: process.env.PUSHER_APP_ID,
+      key: process.env.PUSHER_KEY,
+      secret: process.env.PUSHER_SECRET,
+      cluster: process.env.PUSHER_CLUSTER,
+      useTLS: true,
+    });
+  }
+  return pusher;
+}
+
 export async function registerRoutes(
   httpServer: Server,
   app: Express
 ): Promise<Server> {
-  const io = new SocketIOServer(httpServer, {
-    cors: {
-      origin: "*",
-      methods: ["GET", "POST"],
-    },
-    transports: ["websocket", "polling"],
-  });
 
-  // REST: Create room
-  app.post("/api/rooms", (req, res) => {
-    const { username } = req.body as CreateRoomPayload;
-    if (!username || username.trim().length === 0) {
+  // Create room
+  app.post("/api/rooms/create", (req, res) => {
+    const { username } = req.body;
+    if (!username?.trim()) {
       return res.status(400).json({ message: "Username is required" });
     }
-    // Room is created on socket join, this just validates
-    res.json({ success: true });
+    const userId = randomUUID();
+    const room = storage.createRoom(userId, username.trim());
+    log(`Room created: ${room.id} by ${username}`);
+    res.json({ roomId: room.id, userId, room });
   });
 
-  // REST: Check if room exists
+  // Join room
+  app.post("/api/rooms/:roomId/join", (req, res) => {
+    const { username } = req.body;
+    const roomId = req.params.roomId.toUpperCase();
+
+    if (!username?.trim()) {
+      return res.status(400).json({ message: "Username is required" });
+    }
+
+    const room = storage.getRoom(roomId);
+    if (!room) {
+      return res.status(404).json({ message: "Room not found. Check the room code and try again." });
+    }
+
+    const userId = randomUUID();
+    const user = {
+      id: userId,
+      username: username.trim(),
+      joinedAt: Date.now(),
+      isHost: false,
+    };
+
+    const updatedRoom = storage.addUserToRoom(roomId, user);
+    if (!updatedRoom) {
+      return res.status(500).json({ message: "Failed to join room" });
+    }
+
+    getPusherServer().trigger(`room-${roomId}`, "user-joined", {
+      user,
+      users: updatedRoom.users,
+    });
+
+    log(`User ${username} joined room ${roomId}`);
+    res.json({ userId, room: updatedRoom });
+  });
+
+  // Get room
   app.get("/api/rooms/:roomId", (req, res) => {
     const room = storage.getRoom(req.params.roomId.toUpperCase());
     if (!room) {
       return res.status(404).json({ message: "Room not found" });
     }
-    res.json({ exists: true, userCount: room.users.length });
+    res.json({ exists: true, userCount: room.users.length, room });
   });
 
-  io.on("connection", (socket) => {
-    log(`Socket connected: ${socket.id}`, "socket.io");
+  // Play
+  app.post("/api/rooms/:roomId/play", (req, res) => {
+    const { userId, currentTime } = req.body;
+    const roomId = req.params.roomId.toUpperCase();
+    const room = storage.getRoom(roomId);
+    if (!room) return res.status(404).json({ message: "Room not found" });
 
-    // Create a new room
-    socket.on("createRoom", (payload: CreateRoomPayload) => {
-      try {
-        const { username } = payload;
-        if (!username || username.trim().length === 0) {
-          socket.emit("error", { message: "Username is required" });
-          return;
-        }
-        const room = storage.createRoom(socket.id, username.trim());
-        socket.join(room.id);
-        socket.data.roomId = room.id;
-        socket.data.username = username.trim();
+    const user = room.users.find((u) => u.id === userId);
+    storage.updateVideoState(roomId, { isPlaying: true, currentTime });
 
-        socket.emit("roomCreated", {
-          room,
-          currentUserId: socket.id,
-        });
-
-        log(`Room created: ${room.id} by ${username}`, "socket.io");
-      } catch (err) {
-        socket.emit("error", { message: "Failed to create room" });
-      }
+    getPusherServer().trigger(`room-${roomId}`, "sync-play", {
+      currentTime,
+      username: user?.username || "Someone",
     });
 
-    // Join an existing room
-    socket.on("joinRoom", (payload: JoinRoomPayload) => {
-      try {
-        const { roomId, username } = payload;
-        const normalizedRoomId = roomId.trim().toUpperCase();
+    res.json({ success: true });
+  });
 
-        if (!username || username.trim().length === 0) {
-          socket.emit("error", { message: "Username is required" });
-          return;
-        }
+  // Pause
+  app.post("/api/rooms/:roomId/pause", (req, res) => {
+    const { userId, currentTime } = req.body;
+    const roomId = req.params.roomId.toUpperCase();
+    const room = storage.getRoom(roomId);
+    if (!room) return res.status(404).json({ message: "Room not found" });
 
-        const room = storage.getRoom(normalizedRoomId);
-        if (!room) {
-          socket.emit("error", { message: "Room not found. Check the room code and try again." });
-          return;
-        }
+    const user = room.users.find((u) => u.id === userId);
+    storage.updateVideoState(roomId, { isPlaying: false, currentTime });
 
-        const updatedRoom = storage.addUserToRoom(normalizedRoomId, {
-          id: socket.id,
-          username: username.trim(),
-          joinedAt: Date.now(),
-          isHost: false,
-        });
-
-        if (!updatedRoom) {
-          socket.emit("error", { message: "Failed to join room" });
-          return;
-        }
-
-        socket.join(normalizedRoomId);
-        socket.data.roomId = normalizedRoomId;
-        socket.data.username = username.trim();
-
-        // Send room state to new user
-        socket.emit("roomState", {
-          room: updatedRoom,
-          currentUserId: socket.id,
-        });
-
-        // Notify others
-        socket.to(normalizedRoomId).emit("userJoined", {
-          user: {
-            id: socket.id,
-            username: username.trim(),
-            joinedAt: Date.now(),
-            isHost: false,
-          },
-          room: updatedRoom,
-        });
-
-        log(`User ${username} joined room ${normalizedRoomId}`, "socket.io");
-      } catch (err) {
-        socket.emit("error", { message: "Failed to join room" });
-      }
+    getPusherServer().trigger(`room-${roomId}`, "sync-pause", {
+      currentTime,
+      username: user?.username || "Someone",
     });
 
-    // Load video
-    socket.on("loadVideo", (payload: VideoLoadPayload) => {
-      try {
-        const { roomId } = socket.data;
-        if (!roomId) return;
-        const { url } = payload;
+    res.json({ success: true });
+  });
 
-        const room = storage.updateVideoState(roomId, {
-          url,
-          isPlaying: false,
-          currentTime: 0,
-        });
-        if (!room) return;
+  // Seek
+  app.post("/api/rooms/:roomId/seek", (req, res) => {
+    const { userId, currentTime } = req.body;
+    const roomId = req.params.roomId.toUpperCase();
+    const room = storage.getRoom(roomId);
+    if (!room) return res.status(404).json({ message: "Room not found" });
 
-        io.to(roomId).emit("videoLoaded", {
-          url,
-          username: socket.data.username,
-          room,
-        });
+    const user = room.users.find((u) => u.id === userId);
+    storage.updateVideoState(roomId, { currentTime });
 
-        log(`Video loaded in room ${roomId}: ${url}`, "socket.io");
-      } catch (err) {
-        socket.emit("error", { message: "Failed to load video" });
-      }
+    getPusherServer().trigger(`room-${roomId}`, "sync-seek", {
+      currentTime,
+      username: user?.username || "Someone",
     });
 
-    // Play
-    socket.on("play", (payload: SyncPlayPayload) => {
-      const { roomId } = socket.data;
-      if (!roomId) return;
-      const { currentTime } = payload;
+    res.json({ success: true });
+  });
 
-      storage.updateVideoState(roomId, {
-        isPlaying: true,
-        currentTime,
+  // Load video
+  app.post("/api/rooms/:roomId/load-video", (req, res) => {
+    const { userId, url } = req.body;
+    const roomId = req.params.roomId.toUpperCase();
+    const room = storage.getRoom(roomId);
+    if (!room) return res.status(404).json({ message: "Room not found" });
+
+    const user = room.users.find((u) => u.id === userId);
+    const updatedRoom = storage.updateVideoState(roomId, {
+      url,
+      isPlaying: false,
+      currentTime: 0,
+    });
+
+    getPusherServer().trigger(`room-${roomId}`, "video-loaded", {
+      url,
+      username: user?.username || "Someone",
+      videoState: updatedRoom?.videoState,
+    });
+
+    res.json({ success: true });
+  });
+
+  // Chat
+  app.post("/api/rooms/:roomId/chat", (req, res) => {
+    const { userId, text } = req.body;
+    const roomId = req.params.roomId.toUpperCase();
+    const room = storage.getRoom(roomId);
+    if (!room) return res.status(404).json({ message: "Room not found" });
+
+    const user = room.users.find((u) => u.id === userId);
+    if (!user) return res.status(403).json({ message: "Not in room" });
+
+    const trimmed = text?.trim().slice(0, 500);
+    if (!trimmed) return res.status(400).json({ message: "Empty message" });
+
+    const message = {
+      id: randomUUID(),
+      userId,
+      username: user.username,
+      text: trimmed,
+      timestamp: Date.now(),
+    };
+
+    storage.addMessage(roomId, message);
+    getPusherServer().trigger(`room-${roomId}`, "chat-message", message);
+
+    res.json({ success: true });
+  });
+
+  // Leave
+  app.post("/api/rooms/:roomId/leave", (req, res) => {
+    const { userId } = req.body;
+    const roomId = req.params.roomId.toUpperCase();
+    const room = storage.getRoom(roomId);
+    if (!room) return res.json({ success: true });
+
+    const user = room.users.find((u) => u.id === userId);
+    const updatedRoom = storage.removeUserFromRoom(roomId, userId);
+
+    if (user) {
+      getPusherServer().trigger(`room-${roomId}`, "user-left", {
+        userId,
+        username: user.username,
+        users: updatedRoom?.users || [],
       });
+    }
 
-      socket.to(roomId).emit("syncPlay", {
-        currentTime,
-        username: socket.data.username,
-      });
-    });
-
-    // Pause
-    socket.on("pause", (payload: SyncPausePayload) => {
-      const { roomId } = socket.data;
-      if (!roomId) return;
-      const { currentTime } = payload;
-
-      storage.updateVideoState(roomId, {
-        isPlaying: false,
-        currentTime,
-      });
-
-      socket.to(roomId).emit("syncPause", {
-        currentTime,
-        username: socket.data.username,
-      });
-    });
-
-    // Seek
-    socket.on("seek", (payload: SyncSeekPayload) => {
-      const { roomId } = socket.data;
-      if (!roomId) return;
-      const { currentTime } = payload;
-
-      storage.updateVideoState(roomId, { currentTime });
-
-      socket.to(roomId).emit("syncSeek", {
-        currentTime,
-        username: socket.data.username,
-      });
-    });
-
-    // Chat message
-    socket.on("sendMessage", (payload: ChatMessagePayload) => {
-      const { roomId, username } = socket.data;
-      if (!roomId || !username) return;
-
-      const message = {
-        id: randomUUID(),
-        userId: socket.id,
-        username,
-        text: payload.text.trim().slice(0, 500),
-        timestamp: Date.now(),
-      };
-
-      if (!message.text) return;
-
-      storage.addMessage(roomId, message);
-      io.to(roomId).emit("chatMessage", message);
-    });
-
-    // Request current room state (e.g., after page navigation)
-    socket.on("requestRoomState", () => {
-      const { roomId } = socket.data;
-      if (!roomId) {
-        socket.emit("error", { message: "Not in a room" });
-        return;
-      }
-      const room = storage.getRoom(roomId);
-      if (!room) {
-        socket.emit("error", { message: "Room not found" });
-        return;
-      }
-      socket.emit("roomState", { room, currentUserId: socket.id });
-    });
-
-    // Disconnect
-    socket.on("disconnect", () => {
-      const { roomId, username } = socket.data;
-      if (!roomId) return;
-
-      const updatedRoom = storage.removeUserFromRoom(roomId, socket.id);
-
-      if (updatedRoom) {
-        io.to(roomId).emit("userLeft", {
-          userId: socket.id,
-          username,
-          room: updatedRoom,
-        });
-      }
-
-      log(`Socket disconnected: ${socket.id} (${username}) from room ${roomId}`, "socket.io");
-    });
+    log(`User ${user?.username} left room ${roomId}`);
+    res.json({ success: true });
   });
 
   return httpServer;

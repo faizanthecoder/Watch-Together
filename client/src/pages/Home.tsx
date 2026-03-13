@@ -1,6 +1,5 @@
-import { useState, useEffect } from "react";
+import { useState } from "react";
 import { useLocation } from "wouter";
-import { getSocket } from "@/lib/socket";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -8,7 +7,6 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useToast } from "@/hooks/use-toast";
 import { Film, Users, Zap, Play, Link2, Monitor } from "lucide-react";
-import type { Room } from "@shared/schema";
 
 export default function Home() {
   const [, setLocation] = useLocation();
@@ -17,48 +15,32 @@ export default function Home() {
   const [roomCode, setRoomCode] = useState("");
   const [isConnecting, setIsConnecting] = useState(false);
 
-  useEffect(() => {
-    const socket = getSocket();
-
-    socket.on("roomCreated", ({ room, currentUserId }: { room: Room; currentUserId: string }) => {
-      sessionStorage.setItem("watchParty_userId", currentUserId);
-      sessionStorage.setItem("watchParty_username", username);
-      setLocation(`/room/${room.id}`);
-    });
-
-    socket.on("roomState", ({ room, currentUserId }: { room: Room; currentUserId: string }) => {
-      sessionStorage.setItem("watchParty_userId", currentUserId);
-      sessionStorage.setItem("watchParty_username", username);
-      setLocation(`/room/${room.id}`);
-    });
-
-    socket.on("error", ({ message }: { message: string }) => {
-      setIsConnecting(false);
-      toast({
-        title: "Something went wrong",
-        description: message,
-        variant: "destructive",
-      });
-    });
-
-    return () => {
-      socket.off("roomCreated");
-      socket.off("roomState");
-      socket.off("error");
-    };
-  }, [username, setLocation, toast]);
-
-  const handleCreateRoom = () => {
+  const handleCreateRoom = async () => {
     if (!username.trim()) {
       toast({ title: "Username required", description: "Please enter a username to continue.", variant: "destructive" });
       return;
     }
     setIsConnecting(true);
-    const socket = getSocket();
-    socket.emit("createRoom", { username: username.trim() });
+    try {
+      const res = await fetch("/api/rooms/create", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ username: username.trim() }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.message || "Failed to create room");
+
+      sessionStorage.setItem("watchParty_userId", data.userId);
+      sessionStorage.setItem("watchParty_username", username.trim());
+      sessionStorage.setItem("watchParty_room", JSON.stringify(data.room));
+      setLocation(`/room/${data.roomId}`);
+    } catch (err: any) {
+      toast({ title: "Something went wrong", description: err.message, variant: "destructive" });
+      setIsConnecting(false);
+    }
   };
 
-  const handleJoinRoom = () => {
+  const handleJoinRoom = async () => {
     if (!username.trim()) {
       toast({ title: "Username required", description: "Please enter a username to continue.", variant: "destructive" });
       return;
@@ -68,13 +50,27 @@ export default function Home() {
       return;
     }
     setIsConnecting(true);
-    const socket = getSocket();
-    socket.emit("joinRoom", { roomId: roomCode.trim(), username: username.trim() });
+    try {
+      const res = await fetch(`/api/rooms/${roomCode.trim().toUpperCase()}/join`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ username: username.trim() }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.message || "Failed to join room");
+
+      sessionStorage.setItem("watchParty_userId", data.userId);
+      sessionStorage.setItem("watchParty_username", username.trim());
+      sessionStorage.setItem("watchParty_room", JSON.stringify(data.room));
+      setLocation(`/room/${roomCode.trim().toUpperCase()}`);
+    } catch (err: any) {
+      toast({ title: "Something went wrong", description: err.message, variant: "destructive" });
+      setIsConnecting(false);
+    }
   };
 
   return (
     <div className="min-h-screen bg-background flex flex-col">
-      {/* Header */}
       <header className="border-b border-border/50 bg-card/40 backdrop-blur-sm">
         <div className="max-w-6xl mx-auto px-6 py-4 flex items-center gap-3">
           <div className="flex items-center gap-2">
@@ -89,7 +85,6 @@ export default function Home() {
         </div>
       </header>
 
-      {/* Hero */}
       <main className="flex-1 flex flex-col items-center justify-center px-4 py-16">
         <div className="w-full max-w-4xl mx-auto text-center mb-12">
           <div className="inline-flex items-center gap-2 bg-primary/10 text-primary border border-primary/20 rounded-full px-4 py-1.5 text-sm font-medium mb-6">
@@ -106,7 +101,6 @@ export default function Home() {
           </p>
         </div>
 
-        {/* Feature cards */}
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 w-full max-w-2xl mb-12">
           {[
             { icon: Monitor, title: "Sync playback", desc: "Play, pause & seek together" },
@@ -123,7 +117,6 @@ export default function Home() {
           ))}
         </div>
 
-        {/* Main card */}
         <Card className="w-full max-w-md shadow-lg">
           <CardContent className="p-6">
             <div className="mb-5">
