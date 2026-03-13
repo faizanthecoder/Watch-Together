@@ -40,3 +40,13 @@ waitForPort = 5000
 
 [agent]
 expertMode = true
+
+[userenv]
+
+[userenv.shared]
+PUSHER_APP_ID = "2127488"
+PUSHER_KEY = "5303b0a69c45eb0e69da"
+PUSHER_SECRET = "b5bc895af5338ec16a3d"
+PUSHER_CLUSTER = "mt1"
+VITE_PUSHER_KEY = "5303b0a69c45eb0e69da"
+VITE_PUSHER_CLUSTER = "mt1"
